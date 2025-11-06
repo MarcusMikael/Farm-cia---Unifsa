@@ -3,4 +3,5 @@ __pycache__/
 *.csv
 .env
 *.pdf
-
+.streamlit/secrets.toml
+controle_frequencia.pdf
