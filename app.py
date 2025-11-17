@@ -9,11 +9,20 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 import io
 
-# ======================= CONFIGURAÇÃO SUPABASE =======================
+# ======================= CONFIGURAÇÃO SUPABASE - LOCAL E DEPLOY =======================
 
+from dotenv import load_dotenv
 load_dotenv()
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+# Pegar do st.secrets (funciona no deploy)
+if "SUPABASE_URL" in st.secrets:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# Usa as variáveis do .env (funciona localmente)
+else:
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -37,7 +46,7 @@ if not os.path.exists("frequencia.csv"):
 if not os.path.exists("diario.csv"):
     pd.DataFrame(columns=["Nome", "Data", "Atividade", "Assinatura Supervisor"]).to_csv("diario.csv", index=False)
 
-abaFrequencia, abaDiario = st.tabs([" Controle de Frequência", " Diário de Campo"])
+abaFrequencia, abaDiario, abaAnalise = st.tabs([" Controle de Frequência", " Diário de Campo", "Analises dos Alunos"])
 
 # ======================= FREQUÊNCIA =======================
 
@@ -77,6 +86,103 @@ with abaFrequencia:
     st.divider()
     df = pd.read_csv("frequencia.csv")
     st.dataframe(df)
+    # ==================== GERAR PDF (POR ESTAGIÁRIO) =====================
+
+    st.divider()
+    st.subheader(" Impressão do Controle Estagiário (Frequência)")
+
+    df_all = pd.read_csv("frequencia.csv") if os.path.exists("frequencia.csv") else pd.DataFrame()
+
+    if df_all.empty:
+        st.warning("Nenhum registro encontrado para gerar PDF.")
+    else:
+        nomes = sorted(df_all["Nome"].dropna().unique().tolist())
+        selecionado = st.selectbox("Escolha o estagiário:", ["-- selecionar --"] + nomes)
+
+        periodo_input = st.text_input("Período (opcional) Ex: 13/08/25 a 15/09/25")
+
+        if selecionado != "-- selecionar --":
+            df_est = df_all[df_all["Nome"] == selecionado].copy()
+
+            if not periodo_input:
+                try:
+                    datas = pd.to_datetime(df_est["Data"])
+                    periodo = f"{datas.min().strftime('%d/%m/%Y')} a {datas.max().strftime('%d/%m/%Y')}"
+                except:
+                    periodo = ""
+            else:
+                periodo = periodo_input
+
+            if st.button("🖨️ Gerar PDF do Controle de Frequência"):
+                buffer = io.BytesIO()
+                c = canvas.Canvas(buffer, pagesize=A4)
+
+                largura, altura = A4
+                margin = 2*cm
+                y = altura - margin
+
+                logo_path = os.path.join(os.getcwd(), "unifsa_logo_pdf.png")
+                if os.path.exists(logo_path):
+                    c.drawImage(logo_path, margin, y-3*cm, width=4*cm, preserveAspectRatio=True)
+
+                c.setFont("Helvetica-Bold", 11)
+                c.drawCentredString(largura/2, y-0.3*cm, "ASSOCIAÇÃO TERESINENSE DE ENSINO S/C LTDA – ATE")
+                c.drawCentredString(largura/2, y-1.0*cm, "CENTRO UNIVERSITÁRIO SANTO AGOSTINHO – UNIFSA")
+                c.drawCentredString(largura/2, y-1.7*cm, "COORDENAÇÃO DO CURSO DE FARMÁCIA")
+
+                c.setFont("Helvetica-Bold", 14)
+                c.drawCentredString(largura/2, y-3.3*cm, "CONTROLE DE FREQUÊNCIA")
+
+                c.setFont("Helvetica", 11)
+                y -= 5*cm
+                c.drawString(margin, y, f"Local do Estágio: Farmácia Escola UNIFSA")
+                y -= 0.7*cm
+                c.drawString(margin, y, f"Nome do Estagiário: {selecionado}")
+                y -= 0.7*cm
+                c.drawString(margin, y, f"Período do Estágio: {periodo}")
+
+                y -= 1.5*cm
+                c.setFont("Helvetica-Bold", 10)
+                c.drawString(margin, y, "Data")
+                c.drawString(margin+3*cm, y, "Entrada")
+                c.drawString(margin+6*cm, y, "Saída")
+                c.drawString(margin+9*cm, y, "Horas")
+                c.drawString(margin+11*cm, y, "Ass. Estagiário")
+                c.drawString(margin+15*cm, y, "Ass. Supervisor")
+
+                y -= 0.5*cm
+                c.setFont("Helvetica", 10)
+
+                for _, row in df_est.iterrows():
+                    c.drawString(margin, y, str(row["Data"]))
+                    c.drawString(margin+3*cm, y, str(row["Entrada"]))
+                    c.drawString(margin+6*cm, y, str(row["Saída"]))
+                    c.drawString(margin+9*cm, y, str(row["Horas"]))
+                    c.drawString(margin+11*cm, y, str(row["Assinatura Estagiário"]))
+                    c.drawString(margin+15*cm, y, str(row["Assinatura Supervisor"]))
+                    y -= 0.6*cm
+
+                    if y < 3*cm:
+                        c.showPage()
+                        y = altura - margin
+
+                y = 3*cm
+                c.drawString(margin, y, "Assinatura do Supervisor: ______________________________")
+                y -= 1*cm
+                c.drawString(margin, y, "Assinatura do Professor: ______________________________")
+
+                c.setFont("Helvetica-Oblique", 8)
+                c.drawCentredString(largura/2, 1.5*cm, "Av. Barão de Gurguéia, 2636 - São Pedro, Teresina - PI, 64019-352")
+
+                c.save()
+                buffer.seek(0)
+
+                st.download_button(
+                    label="📥 Baixar PDF Oficial",
+                    data=buffer,
+                    file_name=f"controle_frequencia_{selecionado.replace(' ','_')}.pdf",
+                    mime="application/pdf"
+            )
 
 # ======================= DIÁRIO DE CAMPO =======================
 
@@ -109,164 +215,160 @@ with abaDiario:
     st.divider()
     df2 = pd.read_csv("diario.csv")
     st.dataframe(df2)
+    # ==================== GERAR PDF DO DIÁRIO DE CAMPO =====================
+    st.divider()
+    st.subheader("📘 Impressão do Diário de Campo")
 
-# ==================== GERAR PDF (POR ESTAGIÁRIO) =====================
+    df_diario_all = pd.read_csv("diario.csv") if os.path.exists("diario.csv") else pd.DataFrame()
 
-st.divider()
-st.subheader("📄 Impressão do Controle Estagiário (Frequência)")
+    if df_diario_all.empty:
+        st.warning("Nenhum registro encontrado para gerar PDF.")
+    else:
+        nomes_diario = sorted(df_diario_all["Nome"].dropna().unique().tolist())
+        aluno_diario = st.selectbox("Selecione o estagiário:", ["-- selecionar --"] + nomes_diario)
 
-df_all = pd.read_csv("frequencia.csv") if os.path.exists("frequencia.csv") else pd.DataFrame()
+        if aluno_diario != "-- selecionar --":
+            df_diario_est = df_diario_all[df_diario_all["Nome"] == aluno_diario].copy()
 
-if df_all.empty:
-    st.warning("Nenhum registro encontrado para gerar PDF.")
-else:
-    nomes = sorted(df_all["Nome"].dropna().unique().tolist())
-    selecionado = st.selectbox("Escolha o estagiário:", ["-- selecionar --"] + nomes)
+            if st.button("🖨️ Gerar PDF do Diário de Campo"):
+                buffer = io.BytesIO()
+                c = canvas.Canvas(buffer, pagesize=A4)
 
-    periodo_input = st.text_input("Período (opcional) Ex: 13/08/25 a 15/09/25")
+                largura, altura = A4
+                margin = 2*cm
+                y = altura - margin
 
-    if selecionado != "-- selecionar --":
-        df_est = df_all[df_all["Nome"] == selecionado].copy()
+                c.setFont("Helvetica-Bold", 12)
+                c.drawCentredString(largura/2, y, "DIÁRIO DE CAMPO - FARMÁCIA ESCOLA UNIFSA")
+                y -= 1*cm
 
-        if not periodo_input:
-            try:
-                datas = pd.to_datetime(df_est["Data"])
-                periodo = f"{datas.min().strftime('%d/%m/%Y')} a {datas.max().strftime('%d/%m/%Y')}"
-            except:
-                periodo = ""
-        else:
-            periodo = periodo_input
+                c.setFont("Helvetica", 11)
+                c.drawString(margin, y, f"Nome do Estagiário: {aluno_diario}")
+                y -= 1.2*cm
 
-        if st.button("🖨️ Gerar PDF do Controle de Frequência"):
-            buffer = io.BytesIO()
-            c = canvas.Canvas(buffer, pagesize=A4)
+                c.setFont("Helvetica-Bold", 10)
+                c.drawString(margin, y, "Data")
+                c.drawString(margin+3.5*cm, y, "Atividade")
+                c.drawString(margin+14*cm, y, "Ass. Supervisor")
+                y -= 0.5*cm
 
-            largura, altura = A4
-            margin = 2*cm
-            y = altura - margin
+                c.setFont("Helvetica", 10)
 
-            logo_path = os.path.join(os.getcwd(), "unifsa_logo_pdf.png")
-            if os.path.exists(logo_path):
-                c.drawImage(logo_path, margin, y-3*cm, width=4*cm, preserveAspectRatio=True)
+                for _, row in df_diario_est.iterrows():
+                    c.drawString(margin, y, str(row["Data"]))
+                    c.drawString(margin+3.5*cm, y, str(row["Atividade"])[:50])
+                    c.drawString(margin+14*cm, y, str(row["Assinatura Supervisor"]))
+                    y -= 0.7*cm
 
-            c.setFont("Helvetica-Bold", 11)
-            c.drawCentredString(largura/2, y-0.3*cm, "ASSOCIAÇÃO TERESINENSE DE ENSINO S/C LTDA – ATE")
-            c.drawCentredString(largura/2, y-1.0*cm, "CENTRO UNIVERSITÁRIO SANTO AGOSTINHO – UNIFSA")
-            c.drawCentredString(largura/2, y-1.7*cm, "COORDENAÇÃO DO CURSO DE FARMÁCIA")
+                    if y < 3*cm:
+                        c.showPage()
+                        y = altura - margin
 
-            c.setFont("Helvetica-Bold", 14)
-            c.drawCentredString(largura/2, y-3.3*cm, "CONTROLE DE FREQUÊNCIA")
+                y = 3*cm
+                c.drawString(margin, y, "Assinatura do Supervisor: ______________________________")
 
-            c.setFont("Helvetica", 11)
-            y -= 5*cm
-            c.drawString(margin, y, f"Local do Estágio: Farmácia Escola UNIFSA")
-            y -= 0.7*cm
-            c.drawString(margin, y, f"Nome do Estagiário: {selecionado}")
-            y -= 0.7*cm
-            c.drawString(margin, y, f"Período do Estágio: {periodo}")
+                c.save()
+                buffer.seek(0)
 
-            y -= 1.5*cm
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(margin, y, "Data")
-            c.drawString(margin+3*cm, y, "Entrada")
-            c.drawString(margin+6*cm, y, "Saída")
-            c.drawString(margin+9*cm, y, "Horas")
-            c.drawString(margin+11*cm, y, "Ass. Estagiário")
-            c.drawString(margin+15*cm, y, "Ass. Supervisor")
-
-            y -= 0.5*cm
-            c.setFont("Helvetica", 10)
-
-            for _, row in df_est.iterrows():
-                c.drawString(margin, y, str(row["Data"]))
-                c.drawString(margin+3*cm, y, str(row["Entrada"]))
-                c.drawString(margin+6*cm, y, str(row["Saída"]))
-                c.drawString(margin+9*cm, y, str(row["Horas"]))
-                c.drawString(margin+11*cm, y, str(row["Assinatura Estagiário"]))
-                c.drawString(margin+15*cm, y, str(row["Assinatura Supervisor"]))
-                y -= 0.6*cm
-
-                if y < 3*cm:
-                    c.showPage()
-                    y = altura - margin
-
-            y = 3*cm
-            c.drawString(margin, y, "Assinatura do Supervisor: ______________________________")
-            y -= 1*cm
-            c.drawString(margin, y, "Assinatura do Professor: ______________________________")
-
-            c.setFont("Helvetica-Oblique", 8)
-            c.drawCentredString(largura/2, 1.5*cm, "Av. Barão de Gurguéia, 2636 - São Pedro, Teresina - PI, 64019-352")
-
-            c.save()
-            buffer.seek(0)
-
-            st.download_button(
-                label="📥 Baixar PDF Oficial",
-                data=buffer,
-                file_name=f"controle_frequencia_{selecionado.replace(' ','_')}.pdf",
-                mime="application/pdf"
+                st.download_button(
+                    label="📥 Baixar Diário de Campo (PDF)",
+                    data=buffer,
+                    file_name=f"diario_campo_{aluno_diario.replace(' ','_')}.pdf",
+                    mime="application/pdf"
             )
+# ======================= Analises =======================
+with abaAnalise:
+    # Carregar dados
+    df = pd.read_csv("frequencia.csv")
+    # Caso esteja vazio
+    if df.empty:
+        st.warning("Nenhum dado de frequência encontrado.")
+    else:
+        # Garantir tipos corretos
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+        df["Horas"] = pd.to_numeric(df["Horas"], errors="coerce")
 
-# ==================== GERAR PDF DO DIÁRIO DE CAMPO =====================
+        # Gráfico de barras - total de horas por estagiário 
+        st.markdown("### Total de Horas por Estagiário")
+        horas_por_estagiario = df.groupby("Nome")["Horas"].sum().reset_index()
+        st.bar_chart(horas_por_estagiario.set_index("Nome"))
+        st.divider() 
+        # Gráfico de pizza - proporção total
+        st.markdown("### Proporção de Horas Totais por Estagiário")
 
-st.divider()
-st.subheader("📘 Impressão do Diário de Campo")
+        import plotly.express as px
+        fig = px.pie(horas_por_estagiario,
+                     names="Nome",
+                     values="Horas",
+                     title="Distribuição das Horas de Estágio")
+        st.plotly_chart(fig, use_container_width=True)
+        total_horas = df["Horas"].sum()
+        media_horas = df["Horas"].mean()
+        maior = df.loc[df["Horas"].idxmax(), "Nome"] if not df.empty else "—"
+        maior_soma = horas_por_estagiario.loc[horas_por_estagiario["Horas"].idxmax(), "Nome"]
 
-df_diario_all = pd.read_csv("diario.csv") if os.path.exists("diario.csv") else pd.DataFrame()
+        st.markdown(f"<p style='font-size:26px;'><b>Total de horas registradas:</b> {total_horas:.1f} h</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='font-size:26px;'><b>Média de horas por registro:</b> {media_horas:.2f} h</p>", unsafe_allow_html=True)
+        st.write(f"**Estagiário com mais horas(dia):** {maior}")
+        st.write(f"**Estagiário com mais horas registradas(soma):** {maior_soma}")
 
-if df_diario_all.empty:
-    st.warning("Nenhum registro encontrado para gerar PDF.")
-else:
-    nomes_diario = sorted(df_diario_all["Nome"].dropna().unique().tolist())
-    aluno_diario = st.selectbox("Selecione o estagiário:", ["-- selecionar --"] + nomes_diario)
+# ======================= STORYTELLING COM DADOS =======================
 
-    if aluno_diario != "-- selecionar --":
-        df_diario_est = df_diario_all[df_diario_all["Nome"] == aluno_diario].copy()
+    st.markdown("---")
+    st.subheader("Storytelling com Dados")
 
-        if st.button("🖨️ Gerar PDF do Diário de Campo"):
-            buffer = io.BytesIO()
-            c = canvas.Canvas(buffer, pagesize=A4)
+    if not df.empty:
+        total_horas = df["Horas"].sum() 
+        media_horas = df["Horas"].mean()
 
-            largura, altura = A4
-            margin = 2*cm
-            y = altura - margin
+        # Total por aluno
+        horas_por_estagiario = df.groupby("Nome")["Horas"].sum().reset_index()
 
-            c.setFont("Helvetica-Bold", 12)
-            c.drawCentredString(largura/2, y, "DIÁRIO DE CAMPO - FARMÁCIA ESCOLA UNIFSA")
-            y -= 1*cm
+        # Aluno com mais e menos horas
+        mais_ativo = horas_por_estagiario.loc[horas_por_estagiario["Horas"].idxmax()]
+        menos_ativo = horas_por_estagiario.loc[horas_por_estagiario["Horas"].idxmin()]
 
-            c.setFont("Helvetica", 11)
-            c.drawString(margin, y, f"Nome do Estagiário: {aluno_diario}")
-            y -= 1.2*cm
+        # Número total de alunos
+        num_alunos = horas_por_estagiario["Nome"].nunique()
 
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(margin, y, "Data")
-            c.drawString(margin+3.5*cm, y, "Atividade")
-            c.drawString(margin+14*cm, y, "Ass. Supervisor")
-            y -= 0.5*cm
+        # Frases automáticas
+        st.write(f" **Resumo geral:** Foram registrados **{total_horas:.1f} horas** de estágio no total, distribuídas entre **{num_alunos} estagiários.**")
+        st.write(f" **Média de frequência:** Cada registro representa em média **{media_horas:.2f} horas.**")
+        st.write(f" **Mais ativo:** {mais_ativo['Nome']} realizou **{mais_ativo['Horas']:.1f} horas**, sendo o aluno com maior carga de estágio.")
+        st.write(f" **Menor carga:** {menos_ativo['Nome']} tem **{menos_ativo['Horas']:.1f} horas** registradas até o momento.")
+    else:
+        st.info("Nenhum dado disponível para gerar os insights ainda.")
 
-            c.setFont("Helvetica", 10)
+    # ======================= ANÁLISE DOS SUPERVISORES (DIÁRIO DE CAMPO) =======================
+    st.markdown("---")
+    st.markdown("###  Análise de Supervisores (Diário de Campo)")
 
-            for _, row in df_diario_est.iterrows():
-                c.drawString(margin, y, str(row["Data"]))
-                c.drawString(margin+3.5*cm, y, str(row["Atividade"])[:50])
-                c.drawString(margin+14*cm, y, str(row["Assinatura Supervisor"]))
-                y -= 0.7*cm
+    # Carregar dados do diário
+    df_diario = pd.read_csv("diario.csv")
 
-                if y < 3*cm:
-                    c.showPage()
-                    y = altura - margin
+    if df_diario.empty:
+        st.info("Nenhum registro de diário encontrado para análise.")
+    else:
+        # Contar quantos diários cada supervisor assinou
+        diarios_por_supervisor = df_diario["Assinatura Supervisor"].value_counts().reset_index()
+        diarios_por_supervisor.columns = ["Supervisor", "Total_Diarios"]
 
-            y = 3*cm
-            c.drawString(margin, y, "Assinatura do Supervisor: ______________________________")
+        st.write("#### Quantidade de Diários Validados por Supervisor")
+        st.dataframe(diarios_por_supervisor)
 
-            c.save()
-            buffer.seek(0)
+        import plotly.express as px
+        fig_sup = px.bar(
+            diarios_por_supervisor,
+            x="Supervisor",
+            y="Total_Diarios",
+            text="Total_Diarios",
+            color="Supervisor",
+            title=" Supervisores que Mais Validaram Diários",
+        )
+        fig_sup.update_traces(textposition="outside")
+        st.plotly_chart(fig_sup, use_container_width=True)
 
-            st.download_button(
-                label="📥 Baixar Diário de Campo (PDF)",
-                data=buffer,
-                file_name=f"diario_campo_{aluno_diario.replace(' ','_')}.pdf",
-                mime="application/pdf"
-            )
+        # Insight automático
+        mais_ativo = diarios_por_supervisor.iloc[0]
+        st.success(f" O supervisor **{mais_ativo['Supervisor']}** validou **{mais_ativo['Total_Diarios']}** diários — o mais ativo até agora!")
+
